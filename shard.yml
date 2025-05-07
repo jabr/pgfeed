@@ -1,0 +1,10 @@
+name: pgfeed
+version: 0.1.0
+
+authors:
+  - Justin Bradford <jabradford@gmail.com>
+
+description: |
+  Consume PostgreSQL logical replication INSERT stream and send to sink
+
+license: MIT
