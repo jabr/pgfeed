@@ -1,66 +1,138 @@
-module PQ
-  def connect
-    conn_string = "host=#{@config.pg_host} port=#{@config.pg_port} user=#{@config.pg_user} " +
-                  "password=#{@config.pg_password} dbname=#{@config.pg_database} " +
-                  "replication=database sslmode=verify-full"
+require "./lib_pq"
 
-    repl_conn_ptr = LibPQ.connect(conn_string)
-    if LibPQ.status(repl_conn_ptr) != LibPQ::ConnStatusType::CONNECTION_OK
-      error_msg = String.new(LibPQ.error_message(repl_conn_ptr))
-      LibPQ.finish(repl_conn_ptr)
+class PQ
+  @connection : Pointer(LibPQ::PGconn)
+  @slot : String
+  @publication : String
+
+  struct Config
+    getter host, port, user, password, database, slot, publication
+
+    def initialize(
+      *,
+      @host = "",
+      @port = "",
+      @user = "",
+      @password = "",
+      @database = "",
+      @slot : String,
+      @publication : String,
+    )
+    end
+  end
+
+  def initialize(config : Config)
+    @slot = config.slot
+    @publication = config.publication
+
+    dsn = [
+      config.host.presence && "host=#{config.host}",
+      config.port.presence && "port=#{config.port}",
+      config.user.presence && "user=#{config.user}",
+      config.password.presence && "password=#{config.password}",
+      config.database.presence && "dbname=#{config.database}",
+      "replication=database",
+      "sslmode=verify-full",
+    ].compact.join(" ")
+
+    @connection = LibPQ.connect(dsn)
+    if LibPQ.status(@connection) != LibPQ::ConnStatusType::CONNECTION_OK
+      error_msg = String.new(LibPQ.error_message(@connection))
+      close
       raise "Failed to connect to PostgreSQL for replication: #{error_msg}"
     end
   end
 
-  def start
-    start_repl_query = "START_REPLICATION SLOT #{@config.pg_replication_slot} LOGICAL #{@position_tracker.lsn} " +
-                       "(proto_version '1', publication_names '#{@config.pg_publication}')"
+  def close
+    LibPQ.finish(@connection) if @connection
+    @connection = Pointer(LibPQ::PGconn).null
+  end
 
-    result = LibPQ.exec(repl_conn_ptr, start_repl_query)
+  def start(lsn : String)
+    start_command = "
+      START_REPLICATION SLOT #{@slot} LOGICAL #{lsn}
+      (proto_version '2', publication_names '#{@publication}')
+    "
+
+    result = LibPQ.exec(@connection, start_command)
     status = LibPQ.result_status(result)
 
     if status != LibPQ::ExecStatusType::PGRES_COPY_BOTH
       error_msg = String.new(LibPQ.result_error_message(result))
       LibPQ.clear(result)
-      LibPQ.finish(repl_conn_ptr)
       raise "Failed to start replication: #{error_msg}"
     end
 
     LibPQ.clear(result)
+
+    process
+  ensure
+    close
   end
 
   def process
-    buffer_ptr = Pointer(LibC::Char).null
+    buffer = Pointer(LibC::Char).null
 
     loop do
-      bytes_read = LibPQ.get_copy_data(repl_conn_ptr, pointerof(buffer_ptr), 0)
+      bytes_read = LibPQ.get_copy_data(@connection, pointerof(buffer), 0)
 
       if bytes_read > 0
         # @todo
-        LibPQ.freemem(buffer_ptr)
+        puts(buffer)
+        data = Slice.new(buffer.as(Pointer(UInt8)), bytes_read)
+        type = data[0].chr
+        puts(type)
+        lsn = lsn_to_string(IO::ByteFormat::BigEndian.decode(UInt64, data[1..8]))
+        puts(lsn)
 
-      # @todo
-      #  A result of -1 indicates that the COPY is done. A result of -2 indicates that an error occurred (consult PQerrorMessage for the reason).
-      # After PQgetCopyData returns -1, call PQgetResult to obtain the final result status of the COPY command. One can wait for this result to be available in the usual way. Then return to normal operation.
-      elsif bytes_read == -1
-      elsif bytes_read == -2
+        feedback(lsn)
+        LibPQ.freemem(buffer)
+
+      elsif bytes_read < 0
+        error_msg = String.new(LibPQ.error_message(@connection))
+        raise "Error reading from replication stream: #{error_msg}"
       end
     end
   end
 
-  def feedback
-    # Send the feedback message using libpq
-    result = LibPQ.put_copy_data(repl_conn_ptr, feedback_data.to_unsafe.as(LibC::Char*), feedback_data.size)
+  private def lsn_to_string(lsn : UInt64) : String
+    "#{lsn >> 32}/#{lsn & 0xFFFFFFFF}"
+  end
+
+  private def feedback(lsn : String)
+    # @todo:
+    # r, wal+1, wal+1, wal+1, time in pg epoch, 0
+    result = LibPQ.put_copy_data(
+      @connection,
+      lsn.to_unsafe.as(LibC::Char*),
+      lsn.size
+    )
+    puts("feedback", result)
     if result != 1
-      error_msg = String.new(LibPQ.error_message(repl_conn_ptr))
+      error_msg = String.new(LibPQ.error_message(@connection))
       raise "Failed to send feedback: #{error_msg}"
     end
 
-    # Flush the connection
-    result = LibPQ.flush(repl_conn_ptr)
-    if result != 0
-      error_msg = String.new(LibPQ.error_message(repl_conn_ptr))
-      raise "Failed to flush connection: #{error_msg}"
-    end
+    # puts("end")
+    # result = LibPQ.put_copy_end(@connection, Pointer(LibC::Char).null)
+    # if result != 1
+    #   error_msg = String.new(LibPQ.error_message(@connection))
+    #   raise "Failed to flush feedback: #{error_msg}"
+    # end
   end
 end
+
+config = PQ::Config.new(slot: "slot_events", publication: "pub_events")
+
+client = PQ.new(config)
+
+puts(client)
+puts(client.@connection)
+
+client.start("0/0")
+# client.start("0/490401608")
+puts(client)
+
+client.close()
+puts(client)
+puts(client.@connection)
