@@ -34,12 +34,8 @@ lib LibPQ
     buffer : LibC::Char*,
     nbytes : LibC::Int
   ) : LibC::Int
-  fun put_copy_end = PQputCopyEnd(
-    conn : PGconn*,
-    errormsg : LibC::Char*
-  ) : LibC::Int
-
   fun flush = PQflush(conn : PGconn*) : LibC::Int
+
   fun get_result = PQgetResult(conn : PGconn*) : PGresult
   fun is_busy = PQisBusy(conn : PGconn*) : LibC::Int
   fun consume_input = PQconsumeInput(conn : PGconn*) : LibC::Int

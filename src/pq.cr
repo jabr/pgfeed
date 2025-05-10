@@ -1,3 +1,5 @@
+require "json"
+
 require "./lib_pq"
 
 require "log"
@@ -58,7 +60,7 @@ class PQ
     end
   end
 
-  def initialize(config : Config)
+  def initialize(config : Config, sink : Channel)
     @slot = config.slot
     @publication = config.publication
     @lsn = LSN.new("0/0")
@@ -123,16 +125,31 @@ class PQ
         message_type = data[0].chr
         case message_type
         when 'w' # WAL data
+          #      [0] Byte ('w')
+          #   [1..8] Int64 (msg WAL start)
+          #  [9..16] Int64 (WAL end)
+          # [17..24] Int64 (server time)
+          #   [25..] Byte* (message)
           puts("w")
+          # @todo: for "received" reply, do we use msg WAL start or WAL end?
           lsn = IO::ByteFormat::BigEndian.decode(UInt64, data[9..16])
+          puts("we", lsn)
+          msg_lsn = IO::ByteFormat::BigEndian.decode(UInt64, data[1..8])
+          puts("ws", msg_lsn)
           process_message(data[25..])
           # @todo: move this into process message when we actually send data to sink
           # @lsn.max(lsn)
           feedback(lsn)
 
         when 'k' # Keepalive message
+          #     [0] Byte ('k')
+          #  [1..8] Int64 (WAL end)
+          # [9..16] Int64 (server time)
+          #    [17] Byte (reply request)
           puts("k")
+          # @todo: send this as "received" in reply?
           lsn = IO::ByteFormat::BigEndian.decode(UInt64, data[1..8])
+          puts("ke", lsn, data[17])
           feedback(lsn)
         end
         LibPQ.freemem(buffer)
@@ -144,11 +161,60 @@ class PQ
     end
   end
 
-  private def process_message(message : Slice(UInt8))
+  private def process_message(data : Slice(UInt8))
     # https://www.postgresql.org/docs/17/protocol-logicalrep-message-formats.html
-    type = message[0].chr
+    type = data[0].chr
     puts(type)
-    puts(message)
+    puts(data)
+    case type
+    when 'R'
+      #    [0] Byte ('R')
+      # [1..4] Int32 (txid) - stream txn only
+      # [5..8] Int32 (relation OID)
+      # [9...] CStr (namespace)
+      # [ ...] CStr (relation)
+      #    [x] Int8 (replica identity setting)
+      #  [..2] Int16 (column count)
+      # ** each column:
+      # [0] Int8 (flags)
+      # [1...] CStr (name)
+      #  [..4] Int32 (column type OID)
+      #  [..4] Int32 (type modifier)
+      oid = IO::ByteFormat::BigEndian.decode(UInt32, data[1..4])
+      puts(oid)
+      # columns = IO::ByteFormat::BigEnd
+
+    when 'I'
+      # [0] Byte ('I')
+      # [1..4] Int32 (txid) - streamed txn only
+      # [5..8] Int32 (relation OID)
+      # [9] Byte ('N')
+      # [10..] Data tuple
+      oid = IO::ByteFormat::BigEndian.decode(UInt32, data[1..4])
+      puts(oid)
+
+    when 'B'
+      # [0] Byte ('B')
+      # [1..8] Int64 (txn final LSN)
+      # [9..16] Int64 (commit timestamp)
+      # [17..20] Int32 (txid)
+      txn_lsn = IO::ByteFormat::BigEndian.decode(UInt64, data[1..8])
+      puts(txn_lsn)
+
+    when 'C'
+      io = IO::Memory.new(data)
+      # [0] Byte ('C')
+      puts(io.read_byte)
+      # [1] Int8 (flags)
+      puts(io.read_byte)
+      # [2..9] Int64 (commit LSN)
+      commit_lsn = io.read_bytes(UInt64, IO::ByteFormat::BigEndian)
+      # [10..17] Int64 (txn end LSN)
+      txn_lsn = io.read_bytes(UInt64, IO::ByteFormat::BigEndian)
+      # [18..25] Int64 (commit timestamp)
+      puts(io.read_bytes(UInt64, IO::ByteFormat::BigEndian))
+      puts(commit_lsn, txn_lsn)
+    end
   end
 
   private def feedback(lsn : UInt64)
@@ -185,7 +251,8 @@ end
 
 config = PQ::Config.new(slot: "slot_events", publication: "pub_events")
 
-client = PQ.new(config)
+sink = Channel(JSON::Any).new
+client = PQ.new(config, sink)
 
 puts(client)
 puts(client.@connection)
