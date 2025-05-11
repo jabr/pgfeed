@@ -66,7 +66,7 @@ class PG::PQ
 
     start_command = "
       START_REPLICATION SLOT #{@slot} LOGICAL #{@lsn.to_s}
-      (proto_version '2', publication_names '#{@publication}')
+      (proto_version '2', publication_names '#{@publication}', binary 'true')
     "
 
     result = LibPQ.exec(@connection, start_command)
@@ -93,7 +93,7 @@ class PG::PQ
 
       if bytes_read > 0
         # https://www.postgresql.org/docs/current/protocol-replication.html#PROTOCOL-REPLICATION-XLOGDATA
-        data = XLogData.new(buffer.as(Pointer(UInt8)), bytes_read)
+        data = XLogData.new(buffer, bytes_read)
         message_type = data.read_char
         case message_type
         when 'w' # WAL data
@@ -124,7 +124,7 @@ class PG::PQ
           # @todo: send this as "received" in reply?
           lsn = data.read_uint64
           data.skip(sizeof(Int64))
-          repreq = data.read_byte
+          repreq = data.read_uint8
           puts("ke", lsn, repreq)
           feedback(lsn)
         end
@@ -139,9 +139,9 @@ class PG::PQ
 
   private def process_message(data)
     # https://www.postgresql.org/docs/17/protocol-logicalrep-message-formats.html
+    puts(data.to_bytes)
     type = data.read_char
     puts(type)
-    puts(data.@data.buffer)
     case type
     when 'R'
       #    [0] Byte ('R')
@@ -158,7 +158,20 @@ class PG::PQ
       #  [..4] Int32 (type modifier)
       oid = data.read_int32
       puts(oid)
-      # columns = IO::ByteFormat::BigEnd
+      puts(data.read_string)
+      relation = data.read_string
+      puts("relation: #{relation}")
+      data.skip(sizeof(UInt8))
+
+      columns = data.read_int16
+      while columns > 0
+        columns -= 1
+        flags = data.read_uint8
+        name = data.read_string
+        coid = data.read_int32
+        modifier = data.read_int32
+        puts({flags, name, coid, modifier})
+      end
 
     when 'I'
       # [0] Byte ('I')
@@ -168,6 +181,28 @@ class PG::PQ
       # [10..] Data tuple
       oid = data.read_int32
       puts(oid)
+      data.skip(sizeof(UInt8))
+
+      columns = data.read_int16
+      while columns > 0
+        columns -= 1
+        value_type = data.read_char
+        puts(value_type)
+        case value_type
+        when 'n'
+          puts("null")
+        when 'u'
+          puts("unchanged")
+        when 't'
+          puts("text")
+        when 'b'
+          puts("binary")
+        else
+          puts("unknown")
+        end
+
+
+      end
 
     when 'B'
       # [0] Byte ('B')
@@ -180,7 +215,7 @@ class PG::PQ
     when 'C'
       # [0] Byte ('C')
       # [1] Int8 (flags)
-      data.skip(1)
+      data.skip(sizeof(UInt8))
       # [2..9] Int64 (commit LSN)
       commit_lsn = data.read_uint64
       # [10..17] Int64 (txn end LSN)
