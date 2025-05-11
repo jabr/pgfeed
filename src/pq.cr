@@ -1,6 +1,8 @@
 require "json"
 
-require "./lib_pq"
+require "./pg/lib_pq"
+require "./pg/utils"
+require "./pg/x_log_data"
 
 require "log"
 # @todo: switch back to async default once we're running
@@ -9,7 +11,7 @@ Log.setup do
   Log::IOBackend.new dispatcher: :sync
 end
 
-class PQ
+class PG::PQ
   @connection : Pointer(LibPQ::PGconn)
   @slot : String
   @publication : String
@@ -27,36 +29,6 @@ class PQ
       @slot : String,
       @publication : String,
     )
-    end
-  end
-
-  struct LSN
-    getter value
-    @value = 0_u64
-
-    def initialize(from : String)
-      hi, lo = from.split('/')
-      @value = hi.to_u64 << 32 | lo.to_u64
-    end
-
-    def initialize(@value : UInt64)
-    end
-
-    def to_s : String
-      "#{@value >> 32}/#{@value & 0xFFFFFFFF}"
-    end
-
-    def max(other : UInt64)
-      @value = Math.max(@value, other)
-      self
-    end
-  end
-
-  private module PGTime
-    private PG_EPOCH = Time.utc(2000, 1, 1)
-
-    def self.now : Int64
-      (Time.utc - PG_EPOCH).total_microseconds.to_i64
     end
   end
 
@@ -121,8 +93,8 @@ class PQ
 
       if bytes_read > 0
         # https://www.postgresql.org/docs/current/protocol-replication.html#PROTOCOL-REPLICATION-XLOGDATA
-        data = Slice.new(buffer.as(Pointer(UInt8)), bytes_read)
-        message_type = data[0].chr
+        data = XLogData.new(buffer.as(Pointer(UInt8)), bytes_read)
+        message_type = data.read_char
         case message_type
         when 'w' # WAL data
           #      [0] Byte ('w')
@@ -132,11 +104,13 @@ class PQ
           #   [25..] Byte* (message)
           puts("w")
           # @todo: for "received" reply, do we use msg WAL start or WAL end?
-          lsn = IO::ByteFormat::BigEndian.decode(UInt64, data[9..16])
-          puts("we", lsn)
-          msg_lsn = IO::ByteFormat::BigEndian.decode(UInt64, data[1..8])
+          # data.skip(sizeof(Int64))
+          msg_lsn = data.read_uint64
           puts("ws", msg_lsn)
-          process_message(data[25..])
+          lsn = data.read_uint64
+          puts("we", lsn)
+          data.skip(sizeof(Int64))
+          process_message(data)
           # @todo: move this into process message when we actually send data to sink
           # @lsn.max(lsn)
           feedback(lsn)
@@ -148,8 +122,10 @@ class PQ
           #    [17] Byte (reply request)
           puts("k")
           # @todo: send this as "received" in reply?
-          lsn = IO::ByteFormat::BigEndian.decode(UInt64, data[1..8])
-          puts("ke", lsn, data[17])
+          lsn = data.read_uint64
+          data.skip(sizeof(Int64))
+          repreq = data.read_byte
+          puts("ke", lsn, repreq)
           feedback(lsn)
         end
         LibPQ.freemem(buffer)
@@ -161,11 +137,11 @@ class PQ
     end
   end
 
-  private def process_message(data : Slice(UInt8))
+  private def process_message(data)
     # https://www.postgresql.org/docs/17/protocol-logicalrep-message-formats.html
-    type = data[0].chr
+    type = data.read_char
     puts(type)
-    puts(data)
+    puts(data.@data.buffer)
     case type
     when 'R'
       #    [0] Byte ('R')
@@ -180,7 +156,7 @@ class PQ
       # [1...] CStr (name)
       #  [..4] Int32 (column type OID)
       #  [..4] Int32 (type modifier)
-      oid = IO::ByteFormat::BigEndian.decode(UInt32, data[1..4])
+      oid = data.read_int32
       puts(oid)
       # columns = IO::ByteFormat::BigEnd
 
@@ -190,7 +166,7 @@ class PQ
       # [5..8] Int32 (relation OID)
       # [9] Byte ('N')
       # [10..] Data tuple
-      oid = IO::ByteFormat::BigEndian.decode(UInt32, data[1..4])
+      oid = data.read_int32
       puts(oid)
 
     when 'B'
@@ -198,21 +174,19 @@ class PQ
       # [1..8] Int64 (txn final LSN)
       # [9..16] Int64 (commit timestamp)
       # [17..20] Int32 (txid)
-      txn_lsn = IO::ByteFormat::BigEndian.decode(UInt64, data[1..8])
+      txn_lsn = data.read_uint64
       puts(txn_lsn)
 
     when 'C'
-      io = IO::Memory.new(data)
       # [0] Byte ('C')
-      puts(io.read_byte)
       # [1] Int8 (flags)
-      puts(io.read_byte)
+      data.skip(1)
       # [2..9] Int64 (commit LSN)
-      commit_lsn = io.read_bytes(UInt64, IO::ByteFormat::BigEndian)
+      commit_lsn = data.read_uint64
       # [10..17] Int64 (txn end LSN)
-      txn_lsn = io.read_bytes(UInt64, IO::ByteFormat::BigEndian)
+      txn_lsn = data.read_uint64
       # [18..25] Int64 (commit timestamp)
-      puts(io.read_bytes(UInt64, IO::ByteFormat::BigEndian))
+      puts(data.read_int64)
       puts(commit_lsn, txn_lsn)
     end
   end
@@ -227,7 +201,7 @@ class PQ
     feedback.write_bytes(lsn, IO::ByteFormat::BigEndian) # received
     feedback.write_bytes(@lsn.value, IO::ByteFormat::BigEndian) # flushed
     feedback.write_bytes(@lsn.value, IO::ByteFormat::BigEndian) # applied
-    feedback.write_bytes(PGTime.now, IO::ByteFormat::BigEndian)
+    feedback.write_bytes(PG.now, IO::ByteFormat::BigEndian)
     feedback.write_byte(0_u8) # no reply
 
     data = feedback.to_slice
@@ -249,10 +223,10 @@ class PQ
   end
 end
 
-config = PQ::Config.new(slot: "slot_events", publication: "pub_events")
+config = PG::PQ::Config.new(slot: "slot_events", publication: "pub_events")
 
 sink = Channel(JSON::Any).new
-client = PQ.new(config, sink)
+client = PG::PQ.new(config, sink)
 
 puts(client)
 puts(client.@connection)
