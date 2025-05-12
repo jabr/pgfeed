@@ -3,6 +3,7 @@ require "json"
 require "./pg/lib_pq"
 require "./pg/utils"
 require "./pg/x_log_data"
+require "./pg/column"
 
 require "log"
 # @todo: switch back to async default once we're running
@@ -15,6 +16,7 @@ class PG::PQ
   @connection : Pointer(LibPQ::PGconn)
   @slot : String
   @publication : String
+  @relations = Hash(Int32, Array(Column)).new
 
   struct Config
     getter host, port, user, password, database, slot, publication
@@ -66,7 +68,7 @@ class PG::PQ
 
     start_command = "
       START_REPLICATION SLOT #{@slot} LOGICAL #{@lsn.to_s}
-      (proto_version '2', publication_names '#{@publication}', binary 'true')
+      (proto_version '2', publication_names '#{@publication}', binary 'false')
     "
 
     result = LibPQ.exec(@connection, start_command)
@@ -163,15 +165,16 @@ class PG::PQ
       puts("relation: #{relation}")
       data.skip(sizeof(UInt8))
 
-      columns = data.read_int16
-      while columns > 0
-        columns -= 1
+      count = data.read_int16
+      columns = count.times.map do
         flags = data.read_uint8
         name = data.read_string
         coid = data.read_int32
         modifier = data.read_int32
         puts({flags, name, coid, modifier})
-      end
+        Column.new(name, coid)
+      end.to_a
+      @relations[oid] = columns
 
     when 'I'
       # [0] Byte ('I')
@@ -183,9 +186,11 @@ class PG::PQ
       puts(oid)
       data.skip(sizeof(UInt8))
 
-      columns = data.read_int16
-      while columns > 0
-        columns -= 1
+      columns = @relations[oid]
+      count = data.read_int16
+      count.times do |index|
+        column = columns[index]
+        puts({column.name, column.type})
         value_type = data.read_char
         puts(value_type)
         case value_type
@@ -195,8 +200,16 @@ class PG::PQ
           puts("unchanged")
         when 't'
           puts("text")
+          len = data.read_int32
+          puts(len)
+          value = column.decode_text(data.read_slice(len))
+          puts({value})
+          # data.skip(len)
         when 'b'
           puts("binary")
+          len = data.read_int32
+          puts(len)
+          data.skip(len)
         else
           puts("unknown")
         end

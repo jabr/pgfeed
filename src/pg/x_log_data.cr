@@ -4,7 +4,6 @@ class PG::XLogData < IO::Memory
   end
 
   def to_bytes
-    # (buffer + pos).to_slice(bytesize - pos)
     to_slice + pos
   end
 
@@ -33,6 +32,12 @@ class PG::XLogData < IO::Memory
   end
 
   def read_string
-    gets(0.chr, true)
+    gets(0.chr, true) || ""
+  end
+
+  def read_slice(len : Int32)
+    slice = to_slice[@pos, len]
+    skip(len)
+    slice
   end
 end
