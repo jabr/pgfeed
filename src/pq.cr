@@ -249,7 +249,7 @@ class PG::PQ
     feedback.write_bytes(lsn, IO::ByteFormat::BigEndian) # received
     feedback.write_bytes(@lsn.value, IO::ByteFormat::BigEndian) # flushed
     feedback.write_bytes(@lsn.value, IO::ByteFormat::BigEndian) # applied
-    feedback.write_bytes(PG.now, IO::ByteFormat::BigEndian)
+    feedback.write_bytes(PG::Timestamp.now, IO::ByteFormat::BigEndian)
     feedback.write_byte(0_u8) # no reply
 
     data = feedback.to_slice

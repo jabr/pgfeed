@@ -44,6 +44,15 @@ struct PG::Column
       return str == "t"
     when Type::INT2, Type::INT4, Type::INT8
       return str.to_i64
+    when Type::FLOAT4, Type::FLOAT8
+      return str.to_f64
+    when Type::DATE, Type::TIMESTAMP, Type::TIMESTAMPZ
+      return PG::Timestamp.parse(str)
+    when Type::JSON, Type::JSONB
+      return JSON.parse(str)
+    when Type::TIME, Type::UUID, Type::NUMERIC
+      # @todo: anything better to do with these?
+      return str
     when Type::TEXT
       return str
     else
