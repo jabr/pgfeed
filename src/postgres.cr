@@ -5,44 +5,17 @@ require "./pg/utils"
 require "./pg/x_log_data"
 require "./pg/column"
 
-require "log"
-# @todo: switch back to async default once we're running
-# in an isolated exec context.
-Log.setup do
-  Log::IOBackend.new dispatcher: :sync
-end
-
-class PG::PQ
+class Postgres
   @connection : Pointer(LibPQ::PGconn)
   @slot : String
   @publication : String
-  @relations = Hash(Int32, Array(Column)).new
+  @stream : Stream(JSON::Any)
+  @relations = Hash(Int32, Array(PG::Column)).new
   @binary : Bool
 
-  struct Config
-    getter host, port, user, password, database
-    getter slot, publication
-    getter lsn, binary
-
-    def initialize(
-      *,
-      @host = "",
-      @port = "",
-      @user = "",
-      @password = "",
-      @database = "",
-      @slot : String,
-      @publication : String,
-      @lsn = "0/0",
-      @binary = false,
-    )
-    end
-  end
-
-  def initialize(config : Config, sink : Channel)
+  def initialize(config : Config, @stream : Stream)
     @slot = config.slot
     @publication = config.publication
-    @lsn = LSN.new(config.lsn)
     @binary = config.binary
 
     dsn = [
@@ -69,11 +42,11 @@ class PG::PQ
   end
 
   def start(lsn : String)
-    @lsn.max(LSN.new(lsn).value)
-    puts("Starting LSN: #{@lsn.to_s}")
+    lsn = PG::LSN.validate(lsn)
+    Log.info { "Starting LSN: #{lsn}" }
 
     start_command = "
-      START_REPLICATION SLOT #{@slot} LOGICAL #{@lsn.to_s}
+      START_REPLICATION SLOT #{@slot} LOGICAL #{lsn}
       (proto_version '2', publication_names '#{@publication}', binary '#{@binary}')
     "
 
@@ -101,7 +74,7 @@ class PG::PQ
 
       if bytes_read > 0
         # https://www.postgresql.org/docs/current/protocol-replication.html#PROTOCOL-REPLICATION-XLOGDATA
-        data = XLogData.new(buffer, bytes_read)
+        data = PG::XLogData.new(buffer, bytes_read)
         message_type = data.read_char
         case message_type
         when 'w' # WAL data
@@ -111,16 +84,12 @@ class PG::PQ
           # [17..24] Int64 (server time)
           #   [25..] Byte* (message)
           puts("w")
-          # @todo: for "received" reply, do we use msg WAL start or WAL end?
-          # data.skip(sizeof(Int64))
           msg_lsn = data.read_uint64
           puts("ws", msg_lsn)
           lsn = data.read_uint64
           puts("we", lsn)
           data.skip(sizeof(Int64))
           process_message(data)
-          # @todo: move this into process message when we actually send data to sink
-          # @lsn.max(lsn)
           feedback(lsn)
 
         when 'k' # Keepalive message
@@ -178,7 +147,7 @@ class PG::PQ
         coid = data.read_int32
         modifier = data.read_int32
         puts({flags, name, coid, modifier})
-        Column.new(name, coid)
+        PG::Column.new(name, coid)
       end.to_a
       @relations[oid] = columns
 
@@ -242,19 +211,22 @@ class PG::PQ
       # [18..25] Int64 (commit timestamp)
       puts(data.read_int64)
       puts(commit_lsn, txn_lsn)
+
+      @stream.push(txn_lsn, JSON::Any.new("test"))
     end
   end
 
   private def feedback(lsn : UInt64)
-    puts("Received LSN: #{lsn}")
-    puts("Replicated LSN: #{@lsn.to_s}")
+    Log.info { "Received LSN: #{lsn}" }
+    replicated_lsn = @stream.position
+    Log.info { "Replicated LSN: #{PG::LSN.format(replicated_lsn)}" }
 
     # https://www.postgresql.org/docs/current/protocol-replication.html#PROTOCOL-REPLICATION-STANDBY-STATUS-UPDATE
     feedback = IO::Memory.new(34)
     feedback.write_byte('r'.ord.to_u8) # Standby status update (r)
     feedback.write_bytes(lsn, IO::ByteFormat::BigEndian) # received
-    feedback.write_bytes(@lsn.value, IO::ByteFormat::BigEndian) # flushed
-    feedback.write_bytes(@lsn.value, IO::ByteFormat::BigEndian) # applied
+    feedback.write_bytes(replicated_lsn, IO::ByteFormat::BigEndian) # flushed
+    feedback.write_bytes(replicated_lsn, IO::ByteFormat::BigEndian) # applied
     feedback.write_bytes(PG::Timestamp.now, IO::ByteFormat::BigEndian)
     feedback.write_byte(0_u8) # no reply
 
@@ -276,23 +248,3 @@ class PG::PQ
     end
   end
 end
-
-config = PG::PQ::Config.new(
-  slot: "slot_events",
-  publication: "pub_events",
-  binary: true,
-)
-
-sink = Channel(JSON::Any).new
-client = PG::PQ.new(config, sink)
-
-puts(client)
-puts(client.@connection)
-
-client.start("0/0")
-# client.start("0/490401608")
-puts(client)
-
-client.close()
-puts(client)
-puts(client.@connection)

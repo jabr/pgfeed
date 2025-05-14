@@ -1,22 +1,15 @@
-struct PG::LSN
-  getter value
-  @value = 0_u64
-
-  def initialize(from : String)
+module PG::LSN
+  def self.parse(from : String) : UInt64
     hi, lo = from.split('/')
-    @value = hi.to_u64 << 32 | lo.to_u64
+    return hi.to_u64 << 32 | lo.to_u64
   end
 
-  def initialize(@value : UInt64)
+  def self.format(value : UInt64) : String
+    "#{value >> 32}/#{value & 0xFFFFFFFF}"
   end
 
-  def to_s : String
-    "#{@value >> 32}/#{@value & 0xFFFFFFFF}"
-  end
-
-  def max(other : UInt64)
-    @value = Math.max(@value, other)
-    self
+  def self.validate(from : String) : String
+    format(parse(from))
   end
 end
 

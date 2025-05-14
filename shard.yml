@@ -1,10 +1,18 @@
 name: pgfeed
 version: 0.1.0
+crystal: ">= 1.16.2"
 
 authors:
   - Justin Bradford <jabradford@gmail.com>
+repository: "https://github.com/jabr/pgfeed"
+license: MIT
 
 description: |
   Consume PostgreSQL logical replication INSERT stream and send to sink
 
-license: MIT
+libraries:
+  libpq: ">= 17.5"
+
+targets:
+  pgfeed:
+    main: src/main.cr
