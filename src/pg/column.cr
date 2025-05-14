@@ -56,7 +56,30 @@ struct PG::Column
     when Type::TEXT
       return str
     else
+      # just return the string as-is
       return str
+    end
+  end
+
+  def decode_binary(data : Bytes)
+    puts({@type, data})
+    case @type
+    when Type::TIMESTAMPZ
+      return PG::Timestamp.from(
+        IO::ByteFormat::BigEndian.decode(Int64, data)
+      )
+    when Type::INT8
+      return IO::ByteFormat::BigEndian.decode(Int64, data)
+    when Type::TEXT
+      return String.new(data)
+    when Type::JSONB
+      version = data[0]
+      unless version == 1
+        raise "Unsupported binary JSONB version: #{version}"
+      end
+      return JSON.parse(String.new(data + 1))
+    else
+      raise "Unsupported binary type: #{@type.to_s}"
     end
   end
 end

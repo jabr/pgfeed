@@ -17,9 +17,12 @@ class PG::PQ
   @slot : String
   @publication : String
   @relations = Hash(Int32, Array(Column)).new
+  @binary : Bool
 
   struct Config
-    getter host, port, user, password, database, slot, publication
+    getter host, port, user, password, database
+    getter slot, publication
+    getter lsn, binary
 
     def initialize(
       *,
@@ -30,6 +33,8 @@ class PG::PQ
       @database = "",
       @slot : String,
       @publication : String,
+      @lsn = "0/0",
+      @binary = false,
     )
     end
   end
@@ -37,7 +42,8 @@ class PG::PQ
   def initialize(config : Config, sink : Channel)
     @slot = config.slot
     @publication = config.publication
-    @lsn = LSN.new("0/0")
+    @lsn = LSN.new(config.lsn)
+    @binary = config.binary
 
     dsn = [
       config.host.presence && "host=#{config.host}",
@@ -68,7 +74,7 @@ class PG::PQ
 
     start_command = "
       START_REPLICATION SLOT #{@slot} LOGICAL #{@lsn.to_s}
-      (proto_version '2', publication_names '#{@publication}', binary 'false')
+      (proto_version '2', publication_names '#{@publication}', binary '#{@binary}')
     "
 
     result = LibPQ.exec(@connection, start_command)
@@ -204,12 +210,12 @@ class PG::PQ
           puts(len)
           value = column.decode_text(data.read_slice(len))
           puts({value})
-          # data.skip(len)
         when 'b'
           puts("binary")
           len = data.read_int32
           puts(len)
-          data.skip(len)
+          value = column.decode_binary(data.read_slice(len))
+          puts({value})
         else
           puts("unknown")
         end
@@ -271,7 +277,11 @@ class PG::PQ
   end
 end
 
-config = PG::PQ::Config.new(slot: "slot_events", publication: "pub_events")
+config = PG::PQ::Config.new(
+  slot: "slot_events",
+  publication: "pub_events",
+  binary: true,
+)
 
 sink = Channel(JSON::Any).new
 client = PG::PQ.new(config, sink)
