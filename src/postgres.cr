@@ -71,6 +71,7 @@ class Postgres
   def process
     buffer = Pointer(LibC::Char).null
 
+    # @todo: wrap this in another loop with a PQconsumeInput before inner loop below?
     loop do
       bytes_read = LibPQ.get_copy_data(@connection, pointerof(buffer), 0)
 
