@@ -62,7 +62,7 @@ struct PG::Column
   end
 
   def decode_binary(data : Bytes)
-    puts({@type, data})
+    Log.debug { "decode binary #{@type} : #{data}}" }
     case @type
     when Type::TIMESTAMPZ
       return PG::Timestamp.from(

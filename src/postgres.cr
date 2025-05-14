@@ -83,11 +83,11 @@ class Postgres
           #  [9..16] Int64 (WAL end)
           # [17..24] Int64 (server time)
           #   [25..] Byte* (message)
-          puts("w")
+          Log.debug { "w" }
           msg_lsn = data.read_uint64
-          puts("ws", msg_lsn)
+          Log.debug { "ws #{msg_lsn}" }
           lsn = data.read_uint64
-          puts("we", lsn)
+          Log.debug { "we #{lsn}" }
           data.skip(sizeof(Int64))
           process_message(data)
           feedback(lsn)
@@ -97,12 +97,12 @@ class Postgres
           #  [1..8] Int64 (WAL end)
           # [9..16] Int64 (server time)
           #    [17] Byte (reply request)
-          puts("k")
+          Log.debug { "k" }
           # @todo: send this as "received" in reply?
           lsn = data.read_uint64
           data.skip(sizeof(Int64))
           repreq = data.read_uint8
-          puts("ke", lsn, repreq)
+          Log.debug { "ke #{lsn} #{repreq}" }
           feedback(lsn)
         end
         LibPQ.freemem(buffer)
@@ -116,9 +116,9 @@ class Postgres
 
   private def process_message(data)
     # https://www.postgresql.org/docs/17/protocol-logicalrep-message-formats.html
-    puts(data.to_bytes)
+    Log.debug { data.to_bytes }
     type = data.read_char
-    puts(type)
+    Log.debug { type }
     case type
     when 'R'
       #    [0] Byte ('R')
@@ -134,10 +134,11 @@ class Postgres
       #  [..4] Int32 (column type OID)
       #  [..4] Int32 (type modifier)
       oid = data.read_int32
-      puts(oid)
-      puts(data.read_string)
+      Log.debug { oid }
+      namespace = data.read_string
+      Log.debug { namespace }
       relation = data.read_string
-      puts("relation: #{relation}")
+      Log.debug { "relation: #{relation}" }
       data.skip(sizeof(UInt8))
 
       count = data.read_int16
@@ -146,7 +147,7 @@ class Postgres
         name = data.read_string
         coid = data.read_int32
         modifier = data.read_int32
-        puts({flags, name, coid, modifier})
+        Log.debug { {flags, name, coid, modifier} }
         PG::Column.new(name, coid)
       end.to_a
       @relations[oid] = columns
@@ -158,35 +159,35 @@ class Postgres
       # [9] Byte ('N')
       # [10..] Data tuple
       oid = data.read_int32
-      puts(oid)
+      Log.debug { oid }
       data.skip(sizeof(UInt8))
 
       columns = @relations[oid]
       count = data.read_int16
       count.times do |index|
         column = columns[index]
-        puts({column.name, column.type})
+        Log.debug { {column.name, column.type} }
         value_type = data.read_char
-        puts(value_type)
+        Log.debug { value_type }
         case value_type
         when 'n'
-          puts("null")
+          Log.debug { "null" }
         when 'u'
-          puts("unchanged")
+          Log.debug { "unchanged" }
         when 't'
-          puts("text")
+          Log.debug { "text" }
           len = data.read_int32
-          puts(len)
+          Log.debug { len }
           value = column.decode_text(data.read_slice(len))
-          puts({value})
+          Log.debug { {value} }
         when 'b'
-          puts("binary")
+          Log.debug { "binary" }
           len = data.read_int32
-          puts(len)
+          Log.debug { len }
           value = column.decode_binary(data.read_slice(len))
-          puts({value})
+          Log.debug { {value} }
         else
-          puts("unknown")
+          Log.debug { "unknown" }
         end
 
 
@@ -198,7 +199,7 @@ class Postgres
       # [9..16] Int64 (commit timestamp)
       # [17..20] Int32 (txid)
       txn_lsn = data.read_uint64
-      puts(txn_lsn)
+      Log.debug { txn_lsn }
 
     when 'C'
       # [0] Byte ('C')
@@ -209,8 +210,9 @@ class Postgres
       # [10..17] Int64 (txn end LSN)
       txn_lsn = data.read_uint64
       # [18..25] Int64 (commit timestamp)
-      puts(data.read_int64)
-      puts(commit_lsn, txn_lsn)
+      ci_ts = data.read_int64
+      Log.debug { ci_ts }
+      Log.debug { {commit_lsn, txn_lsn} }
 
       @stream.push(txn_lsn, JSON::Any.new("test"))
     end
