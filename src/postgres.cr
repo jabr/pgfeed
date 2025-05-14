@@ -10,8 +10,10 @@ class Postgres
   @slot : String
   @publication : String
   @stream : Stream(JSON::Any)
-  @relations = Hash(Int32, Array(PG::Column)).new
   @binary : Bool
+
+  @relations = Hash(Int32, Array(PG::Column)).new
+  @records : Array(JSON::Any) = [] of JSON::Any
 
   def initialize(config : Config, @stream : Stream)
     @slot = config.slot
@@ -163,6 +165,7 @@ class Postgres
       data.skip(sizeof(UInt8))
 
       columns = @relations[oid]
+      record = {} of String => JSON::Any
       count = data.read_int16
       count.times do |index|
         column = columns[index]
@@ -172,26 +175,30 @@ class Postgres
         case value_type
         when 'n'
           Log.debug { "null" }
+          record[column.name] = JSON::Any.new(nil)
         when 'u'
           Log.debug { "unchanged" }
+          record[column.name] = JSON::Any.new(nil) # @todo: better value for this?
         when 't'
           Log.debug { "text" }
           len = data.read_int32
           Log.debug { len }
           value = column.decode_text(data.read_slice(len))
           Log.debug { {value} }
+          record[column.name] = JSON::Any.new(value)
         when 'b'
           Log.debug { "binary" }
           len = data.read_int32
           Log.debug { len }
           value = column.decode_binary(data.read_slice(len))
           Log.debug { {value} }
+          record[column.name] = JSON::Any.new(value)
         else
+          # @todo: raise exception
           Log.debug { "unknown" }
         end
-
-
       end
+      @records << JSON::Any.new(record)
 
     when 'B'
       # [0] Byte ('B')
@@ -200,6 +207,7 @@ class Postgres
       # [17..20] Int32 (txid)
       txn_lsn = data.read_uint64
       Log.debug { txn_lsn }
+      @records = [] of JSON::Any
 
     when 'C'
       # [0] Byte ('C')
@@ -214,7 +222,9 @@ class Postgres
       Log.debug { ci_ts }
       Log.debug { {commit_lsn, txn_lsn} }
 
-      @stream.push(txn_lsn, JSON::Any.new("test"))
+      @records.each do |record|
+        @stream.push(txn_lsn, record)
+      end
     end
   end
 

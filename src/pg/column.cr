@@ -47,9 +47,9 @@ struct PG::Column
     when Type::FLOAT4, Type::FLOAT8
       return str.to_f64
     when Type::DATE, Type::TIMESTAMP, Type::TIMESTAMPZ
-      return PG::Timestamp.parse(str)
+      return PG::Timestamp.parse(str).to_unix_us
     when Type::JSON, Type::JSONB
-      return JSON.parse(str)
+      return JSON.parse(str).raw
     when Type::TIME, Type::UUID, Type::NUMERIC
       # @todo: anything better to do with these?
       return str
@@ -67,7 +67,7 @@ struct PG::Column
     when Type::TIMESTAMPZ
       return PG::Timestamp.from(
         IO::ByteFormat::BigEndian.decode(Int64, data)
-      )
+      ).to_unix_us
     when Type::INT8
       return IO::ByteFormat::BigEndian.decode(Int64, data)
     when Type::TEXT
@@ -77,7 +77,7 @@ struct PG::Column
       unless version == 1
         raise "Unsupported binary JSONB version: #{version}"
       end
-      return JSON.parse(String.new(data + 1))
+      return JSON.parse(String.new(data + 1)).raw
     else
       raise "Unsupported binary type: #{@type.to_s}"
     end
