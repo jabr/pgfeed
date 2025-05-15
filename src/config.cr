@@ -1,7 +1,7 @@
 struct Config
   getter host, port, user, password, database
   getter slot, publication
-  getter lsn, binary
+  getter binary, replicated_file
 
   def initialize(
     *,
@@ -12,8 +12,15 @@ struct Config
     @database = "",
     @slot : String,
     @publication : String,
-    @lsn = "0/0",
     @binary = false,
+    @replicated_file = "replicated.lsn"
   )
+  end
+
+  def lsn
+    return File.read(replicated_file).chomp if File.exists?(replicated_file)
+    return "0/0"
+  rescue
+    return "0/0"
   end
 end

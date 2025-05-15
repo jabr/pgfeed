@@ -4,8 +4,9 @@ require "log"
 require "./config"
 require "./stream"
 require "./postgres"
+require "./sinks/stdout"
 
-Log.setup_from_env
+Log.setup_from_env(backend: Log::IOBackend.new(STDERR))
 
 config = Config.new(
   slot: "slot_events",
@@ -13,30 +14,22 @@ config = Config.new(
   binary: true,
 )
 
-stream = Stream(JSON::Any).new
+alias Record = Hash(String, JSON::Any::Type)
+stream = Stream(Record).new(config.lsn)
 
 # Run Postgres logical replication logic in its own
 # dedicated thread so it can use blocking IO.
 source = Fiber::ExecutionContext::Isolated.new("Postgres") do
-  client = Postgres.new(config, stream)
-  client.start(config.lsn)
+  Postgres.new(config, stream).start
 end
 
-# @todo: run this in a separate (single or multithreaded?)
-# execution context so that it won't block by the main loop
-# position writer below or any logging output.
-sink = spawn do
-  loop do
-    pos, entry = stream.take
-    Log.info { "replicating @ #{pos} : #{entry}" }
-    # @todo: send to sink
-    stream.replicated(1) # @todo: send pos, not 1
-  end
+# Run sink in its own thread so it won't be blocked by the
+# main loop position writer below or any logging output.
+sink = Fiber::ExecutionContext::SingleThreaded.new("Sink:Stdout").spawn do
+  Sink::Stdout.new(stream).start
 end
 
 loop do
   sleep 10.seconds
-  lsn = PG::LSN.format(stream.position)
-  # @todo: write to position status file
-  Log.debug { "WRITE #{lsn}" }
+  File.write(config.replicated_file, PG::LSN.format(stream.position))
 end

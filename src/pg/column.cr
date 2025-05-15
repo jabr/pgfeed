@@ -37,7 +37,7 @@ struct PG::Column
     @type.to_s
   end
 
-  def decode_text(data : Bytes)
+  def decode_text(data : Bytes) : JSON::Any::Type
     str = String.new(data)
     case @type
     when Type::BOOL
@@ -61,13 +61,17 @@ struct PG::Column
     end
   end
 
-  def decode_binary(data : Bytes)
+  def decode_binary(data : Bytes) : JSON::Any::Type
     Log.debug { "decode binary #{@type} : #{data}}" }
     case @type
     when Type::TIMESTAMPZ
       return PG::Timestamp.from(
         IO::ByteFormat::BigEndian.decode(Int64, data)
       ).to_unix_us
+    when Type::INT2
+      return IO::ByteFormat::BigEndian.decode(Int16, data).to_i64
+    when Type::INT4
+      return IO::ByteFormat::BigEndian.decode(Int32, data).to_i64
     when Type::INT8
       return IO::ByteFormat::BigEndian.decode(Int64, data)
     when Type::TEXT

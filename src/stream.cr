@@ -1,7 +1,7 @@
 class Stream(T)
-  def initialize
+  def initialize(position : String)
     @pending = Channel({UInt64, T}).new(100)
-    @position = Atomic(UInt64).new(0_u64)
+    @position = Atomic(UInt64).new(PG::LSN.parse(position))
   end
 
   def push(position : UInt64, entry : T)
