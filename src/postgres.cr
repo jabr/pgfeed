@@ -44,8 +44,9 @@ class Postgres
   end
 
   def start
-    lsn = PG::LSN.format(@stream.position)
-    Log.info { "Starting LSN: #{lsn}" }
+    position = @stream.position
+    lsn = PG::LSN.format(position)
+    Log.info { "Starting LSN: #{position} (#{lsn})" }
 
     start_command = "
       START_REPLICATION SLOT #{@slot} LOGICAL #{lsn}
@@ -82,30 +83,28 @@ class Postgres
         case message_type
         when 'w' # WAL data
           #      [0] Byte ('w')
+          Log.debug { "'w' - WAL data" }
           #   [1..8] Int64 (msg WAL start)
-          #  [9..16] Int64 (WAL end)
-          # [17..24] Int64 (server time)
-          #   [25..] Byte* (message)
-          Log.debug { "w" }
-          msg_lsn = data.read_uint64
-          Log.debug { "ws #{msg_lsn}" }
-          lsn = data.read_uint64
-          Log.debug { "we #{lsn}" }
           data.skip(sizeof(Int64))
+          #  [9..16] Int64 (WAL end)
+          lsn = data.read_uint64
+          Log.debug { "LSN #{lsn} (#{PG::LSN.format(lsn)})" }
+          # [17..24] Int64 (server time)
+          data.skip(sizeof(Int64))
+          #   [25..] Byte* (message)
           process_message(data)
           feedback(lsn)
 
         when 'k' # Keepalive message
           #     [0] Byte ('k')
+          Log.debug { "k - keepalive" }
           #  [1..8] Int64 (WAL end)
-          # [9..16] Int64 (server time)
-          #    [17] Byte (reply request)
-          Log.debug { "k" }
-          # @todo: send this as "received" in reply?
           lsn = data.read_uint64
+          # [9..16] Int64 (server time)
           data.skip(sizeof(Int64))
+          #    [17] Byte (reply request)
           repreq = data.read_uint8
-          Log.debug { "ke #{lsn} #{repreq}" }
+          # @todo: only send feedback if repreq is set?
           feedback(lsn)
         end
         LibPQ.freemem(buffer)
@@ -119,109 +118,109 @@ class Postgres
 
   private def process_message(data)
     # https://www.postgresql.org/docs/17/protocol-logicalrep-message-formats.html
-    Log.debug { data.to_bytes }
+    Log.trace { data.to_bytes }
     type = data.read_char
-    Log.debug { type }
     case type
     when 'R'
       #    [0] Byte ('R')
-      # [1..4] Int32 (txid) - stream txn only
-      # [5..8] Int32 (relation OID)
-      # [9...] CStr (namespace)
-      # [ ...] CStr (relation)
-      #    [x] Int8 (replica identity setting)
-      #  [..2] Int16 (column count)
-      # ** each column:
-      # [0] Int8 (flags)
-      # [1...] CStr (name)
-      #  [..4] Int32 (column type OID)
-      #  [..4] Int32 (type modifier)
+      Log.debug { "'R' - relation" }
+      # [1..4] Int32 (relation OID)
       oid = data.read_int32
-      Log.debug { oid }
-      namespace = data.read_string
-      Log.debug { namespace }
+      # [5...] CStr (namespace)
+      _ = data.read_string
+      # [ ...] CStr (relation)
       relation = data.read_string
-      Log.debug { "relation: #{relation}" }
+      Log.debug { "relation: #{oid} -> #{relation}" }
+      #    [x] Int8 (replica identity setting)
       data.skip(sizeof(UInt8))
-
+      #  [..2] Int16 (column count)
       count = data.read_int16
+
       columns = count.times.map do
+        # [0] Int8 (flags)
         flags = data.read_uint8
+        # [1...] CStr (name)
         name = data.read_string
+        #  [..4] Int32 (column type OID)
         coid = data.read_int32
+        #  [..4] Int32 (type modifier)
         modifier = data.read_int32
-        Log.debug { {flags, name, coid, modifier} }
+        Log.debug { {name, coid, flags, modifier} }
         PG::Column.new(name, coid)
       end.to_a
       @relations[oid] = columns
 
     when 'I'
       # [0] Byte ('I')
-      # [1..4] Int32 (txid) - streamed txn only
-      # [5..8] Int32 (relation OID)
-      # [9] Byte ('N')
-      # [10..] Data tuple
+      Log.debug { "'I' - insert" }
+      # [1..4] Int32 (relation OID)
       oid = data.read_int32
-      Log.debug { oid }
+      Log.debug { "relation: #{oid}" }
+      # [5] Byte ('N')
       data.skip(sizeof(UInt8))
+
+      # [6..] Data tuple
+      # https://www.postgresql.org/docs/17/protocol-logicalrep-message-formats.html#PROTOCOL-LOGICALREP-MESSAGE-FORMATS-TUPLEDATA
 
       columns = @relations[oid]
       record = {} of String => JSON::Any::Type
+
+      # [0..1] Int16 (column count)
       count = data.read_int16
       count.times do |index|
         column = columns[index]
-        Log.debug { {column.name, column.type} }
+        # [0] Byte (value type)
         value_type = data.read_char
-        Log.debug { value_type }
+        Log.debug { "type '#{value_type}' for #{{column.name, column.type}}" }
+
         case value_type
         when 'n'
-          Log.debug { "null" }
           record[column.name] = nil
         when 'u'
-          Log.debug { "unchanged" }
           record[column.name] = nil # @todo: better value for this?
         when 't'
-          Log.debug { "text" }
+          # [1..4] Int32 (length)
           len = data.read_int32
-          Log.debug { len }
+          # [5..] Byte* (data)
           value = column.decode_text(data.read_slice(len))
           Log.debug { {value} }
           record[column.name] = value
         when 'b'
-          Log.debug { "binary" }
+          # [1..4] Int32 (length)
           len = data.read_int32
-          Log.debug { len }
+          # [5..] Byte* (data)
           value = column.decode_binary(data.read_slice(len))
           Log.debug { {value} }
           record[column.name] = value
         else
-          # @todo: raise exception
-          Log.debug { "unknown" }
+          raise "Unknown value type: #{value_type}"
         end
       end
       @records << record
 
     when 'B'
       # [0] Byte ('B')
+      Log.debug { "'B' - begin" }
       # [1..8] Int64 (txn final LSN)
+      data.skip(sizeof(Int64))
       # [9..16] Int64 (commit timestamp)
+      data.skip(sizeof(Int64))
       # [17..20] Int32 (txid)
-      txn_lsn = data.read_uint64
-      Log.debug { txn_lsn }
+      data.skip(sizeof(Int32))
       @records = [] of Record
 
     when 'C'
       # [0] Byte ('C')
+      Log.debug { "'C' - commit" }
       # [1] Int8 (flags)
       data.skip(sizeof(UInt8))
       # [2..9] Int64 (commit LSN)
-      commit_lsn = data.read_uint64
+      data.skip(sizeof(Int64))
       # [10..17] Int64 (txn end LSN)
       txn_lsn = data.read_uint64
+      Log.debug { "commit LSN #{txn_lsn}" }
       # [18..25] Int64 (commit timestamp)
-      ci_ts = data.read_int64
-      Log.debug { ci_ts }
-      Log.debug { {commit_lsn, txn_lsn} }
+      data.skip(sizeof(Int64))
 
       @records.each do |record|
         @stream.push(txn_lsn, record)
@@ -230,9 +229,13 @@ class Postgres
   end
 
   private def feedback(lsn : UInt64)
-    Log.info { "Received LSN: #{PG::LSN.format(lsn)} (#{lsn})" }
+    # relation or some other information message that did
+    # not advanced the received LSN position
+    return if lsn.zero?
+
+    Log.info { "Received LSN: #{lsn}" }
     replicated_lsn = @stream.position
-    Log.info { "Replicated LSN: #{PG::LSN.format(replicated_lsn)} (#{replicated_lsn})" }
+    Log.info { "Replicated LSN: #{replicated_lsn}" }
 
     # https://www.postgresql.org/docs/current/protocol-replication.html#PROTOCOL-REPLICATION-STANDBY-STATUS-UPDATE
     feedback = IO::Memory.new(34)

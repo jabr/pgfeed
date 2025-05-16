@@ -16,6 +16,7 @@ config = Config.new(
 
 alias Record = Hash(String, JSON::Any::Type)
 stream = Stream(Record).new(config.lsn)
+previous_position = stream.position
 
 # Run Postgres logical replication logic in its own
 # dedicated thread so it can use blocking IO.
@@ -30,6 +31,11 @@ sink = Fiber::ExecutionContext::SingleThreaded.new("Sink:Stdout").spawn do
 end
 
 loop do
-  sleep 10.seconds
-  File.write(config.replicated_file, PG::LSN.format(stream.position))
+  sleep 1.seconds
+  position = stream.position
+  if position != previous_position
+    Log.info { "writing replication position: #{position} (previous #{previous_position})" }
+    File.write(config.replicated_file, PG::LSN.format(position))
+    previous_position = position
+  end
 end
