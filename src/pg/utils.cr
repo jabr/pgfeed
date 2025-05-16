@@ -1,11 +1,13 @@
 module PG::LSN
   def self.parse(from : String) : UInt64
     hi, lo = from.split('/')
-    return hi.to_u64 << 32 | lo.to_u64
+    return hi.to_u64(16) << 32 | lo.to_u64(16)
   end
 
   def self.format(value : UInt64) : String
-    "#{value >> 32}/#{value & 0xFFFFFFFF}"
+    hi = (value >> 32).to_s(16, upcase: true)
+    lo = (value & 0xFFFFFFFF).to_s(16, upcase: true)
+    "#{hi}/#{lo}"
   end
 
   def self.validate(from : String) : String

@@ -230,9 +230,9 @@ class Postgres
   end
 
   private def feedback(lsn : UInt64)
-    Log.info { "Received LSN: #{lsn}" }
+    Log.info { "Received LSN: #{PG::LSN.format(lsn)} (#{lsn})" }
     replicated_lsn = @stream.position
-    Log.info { "Replicated LSN: #{PG::LSN.format(replicated_lsn)}" }
+    Log.info { "Replicated LSN: #{PG::LSN.format(replicated_lsn)} (#{replicated_lsn})" }
 
     # https://www.postgresql.org/docs/current/protocol-replication.html#PROTOCOL-REPLICATION-STANDBY-STATUS-UPDATE
     feedback = IO::Memory.new(34)
