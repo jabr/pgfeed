@@ -16,6 +16,10 @@ The replicated LSN position is periodically written to file (e.g. `replicated.ls
 * Writes to upstream sink use an asynchronous I/O runtime in its own, dedicated thread.
 * Logging output and periodic replicated LSN position checkpoint writes occur in a third (parent) thread.
 
+### Crystal
+
+This currently requires the `-Dpreview_mt -Dexecution_context` options to enable execution contexts in [Crystal](https://crystal-lang.org/).
+
 ## Replication setup in Postgres
 
 ```
@@ -37,7 +41,6 @@ SELECT * FROM pg_create_logical_replication_slot('my_slot', 'pgoutput');
 ## References
 - [PostgreSQL Streaming Replication Protocol](https://www.postgresql.org/docs/current/protocol-replication.html)
 - [PostgreSQL Logical Replication Message Formats](https://www.postgresql.org/docs/17/protocol-logicalrep-message-formats.html)
-- [Crystal language](https://crystal-lang.org/)
 
 ## License
 

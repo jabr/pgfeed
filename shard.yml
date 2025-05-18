@@ -16,3 +16,5 @@ libraries:
 targets:
   pgfeed:
     main: src/main.cr
+    # @todo: not sure if this is possible yet. use `make build` for now
+    # flags: -Dpreview_mt -Dexecution_context
